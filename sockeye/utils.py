@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 def save_graph(symbol: mx.sym.Symbol, filename: str, hide_weights: bool = True):
     """
     Dumps computation graph visualization to .pdf and .dot file.
-    
+
     :param symbol: The symbol representing the computation graph.
     :param filename: The filename to save the graphic to.
     :param hide_weights: If true the weights will not be shown.
@@ -227,7 +227,7 @@ def get_alignments(attention_matrix: np.ndarray, threshold: float = .9) -> Itera
     """
     Yields hard alignments from an attention_matrix (target_length, source_length)
     given a threshold.
-    
+
     :param attention_matrix: The attention matrix.
     :param threshold: The threshold for including an alignment link in the result.
     :return: Generator yielding strings of the form 0-0, 0-1, 2-1, 2-2, 3-4...

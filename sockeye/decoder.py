@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -41,7 +41,7 @@ def get_decoder(num_embed: int,
                 context_gating: bool = False) -> 'Decoder':
     """
     Returns a StackedRNNDecoder with the following properties.
-    
+
     :param num_embed: Target word embedding size.
     :param vocab_size: Target vocabulary size.
     :param num_layers: Number of RNN layers in the decoder.
@@ -138,7 +138,8 @@ class StackedRNNDecoder(Decoder):
                  residual: bool = False,
                  forget_bias: float = 0.0,
                  lexicon: Optional[sockeye.lexicon.Lexicon] = None,
-                 context_gating: bool = False):
+                 context_gating: bool = False,
+                 offset: float = 100.0):
         # TODO: implement variant without input feeding
         self.num_layers = num_layers
         self.prefix = prefix
@@ -155,6 +156,9 @@ class StackedRNNDecoder(Decoder):
             self.mapped_rnn_output_b = mx.sym.Variable("%smapped_rnn_output_bias" % prefix)
             self.mapped_context_w = mx.sym.Variable("%smapped_context_weight" % prefix)
             self.mapped_context_b = mx.sym.Variable("%smapped_context_bias" % prefix)
+
+        # offset for scheduled sampling
+        self.offset = offset
 
         # Decoder stacked RNN
         self.rnn = sockeye.rnn.get_stacked_rnn(cell_type, num_hidden, num_layers, dropout, prefix, residual,
@@ -257,7 +261,7 @@ class StackedRNNDecoder(Decoder):
         """
         Performs single-time step in the RNN, given previous word vector, previous hidden state, attention function,
         and RNN layer states.
-        
+
         :param word_vec_prev: Embedding of previous target word. Shape: (batch_size, num_target_embed).
         :param state: Decoder state consisting of hidden and layer states.
         :param attention_func: Attention function to produce context vector.
@@ -322,6 +326,7 @@ class StackedRNNDecoder(Decoder):
                source_seq_len: int,
                source_length: mx.sym.Symbol,
                target: mx.sym.Symbol,
+               target_label: mx.sym.Symbol,
                target_seq_len: int,
                source_lexicon: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
@@ -355,49 +360,57 @@ class StackedRNNDecoder(Decoder):
         # layer_states: List[(batch_size, state_num_hidden]
         state = self.compute_init_states(source_encoded, source_length)
 
-        # hidden_all: target_seq_len * (batch_size, 1, rnn_num_hidden)
-        hidden_all = []
+        # pros_all: target_seq_len * (batch_size, 1, rnn_num_hidden)
+        probs_all = []
 
-        # TODO: possible alternative: feed back the context vector instead of the hidden (see lamtram)
+        updates = mx.sym.Variable('updates')
 
-        lexical_biases = []
+        def inv_sigmoid_decay(_updates):
+            assert self.offset >= 1, 'Offset should be greater than or equal to 1'
+            return self.offset / (self.offset + mx.sym.exp(_updates / self.offset))
 
         self.rnn.reset()
 
+        splitted_target = mx.sym.split(target_label, num_outputs=target_seq_len, axis=1, squeeze_axis=True)
+        threshold = inv_sigmoid_decay(updates)
+
         for seq_idx in range(target_seq_len):
-            # hidden: (batch_size, rnn_num_hidden)
-            state, attention_state = self._step(target_embed[seq_idx],
+
+            rnd_val = mx.sym.random_uniform(low=0, high=1.0, shape=1)[0]
+            if seq_idx == 0:
+                trg_emb = target_embed[seq_idx]
+            else:
+                trg_emb = mx.sym.where(rnd_val <= threshold,
+                                       target_embed[seq_idx],
+                                       self.embedding.encode(sampled_words, None, 1))
+
+            state, attention_state = self._step(trg_emb,
                                                 state,
                                                 attention_func,
                                                 attention_state,
                                                 seq_idx)
 
-            # hidden_expanded: (batch_size, 1, rnn_num_hidden)
-            hidden_all.append(mx.sym.expand_dims(data=state.hidden, axis=1))
+            # logits: (batch_size, target_vocab_size)
+            logits = mx.sym.FullyConnected(data=state.hidden, num_hidden=self.target_vocab_size,
+                                        weight=self.cls_w, bias=self.cls_b, name=C.LOGITS_NAME)
+            # probs: (batch_size, target_vocab_size)
+            prob = mx.sym.SoftmaxOutput(data=logits,
+                                        label=splitted_target[seq_idx],
+                                        ignore_label=C.PAD_ID,
+                                        use_ignore=True,
+                                        # normalization=normalization,
+                                        name=C.SOFTMAX_NAME + '_%d' % seq_idx)
+            sampled_words = mx.sym.sample_multinomial(prob)
+            # probs_all.append(mx.sym.transpose(prob))
+            probs_all.append(prob)
 
-            if source_lexicon is not None:
-                assert self.lexicon is not None, "source_lexicon should not be None if no lexicon available"
-                lexical_biases.append(self.lexicon.calculate_lex_bias(source_lexicon, attention_state.probs))
+        # losses: (target_seq_len * batch_size, target_vocab_size)
+        losses = mx.sym.concat(*probs_all , dim=0, name=C.SOFTMAX_NAME)
+        losses = mx.sym.reshape(losses, shape=(target_seq_len, -1, self.target_vocab_size))
+        losses = mx.sym.swapaxes(losses, dim1=0, dim2=1)
+        losses = mx.sym.reshape(losses, shape=(-1, self.target_vocab_size), name=C.SOFTMAX_NAME)
 
-        # concatenate along time axis
-        # hidden_concat: (batch_size, target_seq_len, rnn_num_hidden)
-        hidden_concat = mx.sym.concat(*hidden_all, dim=1, name="%shidden_concat" % self.prefix)
-        # hidden_concat: (batch_size * target_seq_len, rnn_num_hidden)
-        hidden_concat = mx.sym.reshape(data=hidden_concat, shape=(-1, self.num_hidden))
-
-        # logits: (batch_size * target_seq_len, target_vocab_size)
-        logits = mx.sym.FullyConnected(data=hidden_concat, num_hidden=self.target_vocab_size,
-                                       weight=self.cls_w, bias=self.cls_b, name=C.LOGITS_NAME)
-
-        if source_lexicon is not None:
-            # lexical_biases_concat: (batch_size, target_seq_len, target_vocab_size)
-            lexical_biases_concat = mx.sym.concat(*lexical_biases, dim=1, name='lex_bias_concat')
-            # lexical_biases_concat: (batch_size * target_seq_len, target_vocab_size)
-            lexical_biases_concat = mx.sym.reshape(data=lexical_biases_concat, shape=(-1, self.target_vocab_size))
-            logits = mx.sym.broadcast_add(lhs=logits, rhs=lexical_biases_concat,
-                                          name='%s_plus_lex_bias' % C.LOGITS_NAME)
-
-        return logits
+        return losses
 
     def predict(self,
                 word_id_prev: mx.sym.Symbol,

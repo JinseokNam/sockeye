@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -75,12 +75,13 @@ class TrainingModel(sockeye.model.SockeyeModel):
         source = mx.sym.Variable(C.SOURCE_NAME)
         source_length = mx.sym.Variable(C.SOURCE_LENGTH_NAME)
         target = mx.sym.Variable(C.TARGET_NAME)
-        labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME), shape=(-1,))
+        labels = mx.sym.Variable(C.TARGET_LABEL_NAME)
 
         loss = sockeye.loss.get_loss(self.config)
 
         data_names = [x[0] for x in train_iter.provide_data]
         label_names = [x[0] for x in train_iter.provide_label]
+        state_names = ['updates']
 
         def sym_gen(seq_lens):
             """
@@ -92,16 +93,15 @@ class TrainingModel(sockeye.model.SockeyeModel):
             source_encoded = self.encoder.encode(source, source_length, seq_len=source_seq_len)
             source_lexicon = self.lexicon.lookup(source) if self.lexicon else None
 
-            logits = self.decoder.decode(source_encoded, source_seq_len, source_length,
-                                         target, target_seq_len, source_lexicon)
+            losses = self.decoder.decode(source_encoded, source_seq_len, source_length,
+                                         target, labels, target_seq_len, source_lexicon)
 
-            outputs = loss.get_loss(logits, labels)
-
-            return mx.sym.Group(outputs), data_names, label_names
+            return losses, data_names, label_names
 
         if bucketing:
             logger.info("Using bucketing. Default max_seq_len=%s", train_iter.default_bucket_key)
             return mx.mod.BucketingModule(sym_gen=sym_gen,
+                                          state_names=state_names,
                                           logger=logger,
                                           default_bucket_key=train_iter.default_bucket_key,
                                           context=self.context)
@@ -111,6 +111,7 @@ class TrainingModel(sockeye.model.SockeyeModel):
             return mx.mod.Module(symbol=symbol,
                                  data_names=data_names,
                                  label_names=label_names,
+                                 state_names=state_names,
                                  logger=logger,
                                  context=self.context)
 
@@ -212,7 +213,7 @@ class TrainingModel(sockeye.model.SockeyeModel):
              max_num_not_improved: int):
         """
         Internal fit method. Runtime determined by early stopping.
-        
+
         :param train_iter: Training data iterator.
         :param val_iter: Validation data iterator.
         :param output_folder: Model output folder.
@@ -230,10 +231,16 @@ class TrainingModel(sockeye.model.SockeyeModel):
         updates = 0
         samples = 0
         next_data_batch = train_iter.next()
+        state_names = ['updates']
         while max_updates == -1 or updates < max_updates:
             if not train_iter.iter_next():
                 epoch += 1
                 train_iter.reset()
+
+            states = self.module.get_states(merge_multi_context=False)
+            for state_name, state in zip(state_names, states):
+                for state_per_dev in state:
+                    state_per_dev[:] = eval(state_name)
 
             # process batch
             batch = next_data_batch
