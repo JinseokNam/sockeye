@@ -75,13 +75,20 @@ class TrainingModel(sockeye.model.SockeyeModel):
         source = mx.sym.Variable(C.SOURCE_NAME)
         source_length = mx.sym.Variable(C.SOURCE_LENGTH_NAME)
         target = mx.sym.Variable(C.TARGET_NAME)
-        labels = mx.sym.Variable(C.TARGET_LABEL_NAME)
 
-        loss = sockeye.loss.get_loss(self.config)
+        iterative_decode = True if self.config.scheduled_sampling_type else False
+
+        if iterative_decode:
+            labels = mx.sym.Variable(C.TARGET_LABEL_NAME)
+            state_names = ['updates']
+        else:
+            labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME), shape=(-1,))
+
+            loss = sockeye.loss.get_loss(self.config)
+            state_names = []
 
         data_names = [x[0] for x in train_iter.provide_data]
         label_names = [x[0] for x in train_iter.provide_label]
-        state_names = ['updates']
 
         def sym_gen(seq_lens):
             """
@@ -93,8 +100,15 @@ class TrainingModel(sockeye.model.SockeyeModel):
             source_encoded = self.encoder.encode(source, source_length, seq_len=source_seq_len)
             source_lexicon = self.lexicon.lookup(source) if self.lexicon else None
 
-            losses = self.decoder.decode(source_encoded, source_seq_len, source_length,
-                                         target, labels, target_seq_len, source_lexicon)
+            if iterative_decode:
+                losses = self.decoder.decode_iter(source_encoded, source_seq_len, source_length,
+                                                  target, labels, target_seq_len, source_lexicon)
+            else:
+                logits = self.decoder.decode(source_encoded, source_seq_len, source_length,
+                                             target, target_seq_len, source_lexicon)
+
+                outputs = loss.get_loss(logits, labels)
+                losses = mx.sym.Group(outputs)
 
             return losses, data_names, label_names
 
@@ -231,6 +245,8 @@ class TrainingModel(sockeye.model.SockeyeModel):
         updates = 0
         samples = 0
         next_data_batch = train_iter.next()
+
+        # XXX Fixme
         state_names = ['updates']
         while max_updates == -1 or updates < max_updates:
             if not train_iter.iter_next():

@@ -377,7 +377,6 @@ class StackedRNNDecoder(Decoder):
                source_seq_len: int,
                source_length: mx.sym.Symbol,
                target: mx.sym.Symbol,
-               target_label: mx.sym.Symbol,
                target_seq_len: int,
                source_lexicon: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
@@ -411,14 +410,92 @@ class StackedRNNDecoder(Decoder):
         # layer_states: List[(batch_size, state_num_hidden]
         state = self.compute_init_states(source_encoded, source_length)
 
-        # pros_all: target_seq_len * (batch_size, 1, rnn_num_hidden)
+        # hidden_all: target_seq_len * (batch_size, 1, rnn_num_hidden)
+        hidden_all = []
+
+        # TODO: possible alternative: feed back the context vector instead of the hidden (see lamtram)
+
+        lexical_biases = []
+
+        self.rnn.reset()
+
+        for seq_idx in range(target_seq_len):
+            # hidden: (batch_size, rnn_num_hidden)
+            state, attention_state = self._step(target_embed[seq_idx],
+                                                state,
+                                                attention_func,
+                                                attention_state,
+                                                seq_idx)
+
+            # hidden_expanded: (batch_size, 1, rnn_num_hidden)
+            hidden_all.append(mx.sym.expand_dims(data=state.hidden, axis=1))
+
+            if source_lexicon is not None:
+                assert self.lexicon is not None, "source_lexicon should not be None if no lexicon available"
+                lexical_biases.append(self.lexicon.calculate_lex_bias(source_lexicon, attention_state.probs))
+
+        # concatenate along time axis
+        # hidden_concat: (batch_size, target_seq_len, rnn_num_hidden)
+        hidden_concat = mx.sym.concat(*hidden_all, dim=1, name="%shidden_concat" % self.prefix)
+        # hidden_concat: (batch_size * target_seq_len, rnn_num_hidden)
+        hidden_concat = mx.sym.reshape(data=hidden_concat, shape=(-1, self.num_hidden))
+
+        # logits: (batch_size * target_seq_len, target_vocab_size)
+        logits = mx.sym.FullyConnected(data=hidden_concat, num_hidden=self.target_vocab_size,
+                                       weight=self.cls_w, bias=self.cls_b, name=C.LOGITS_NAME)
+
+        if source_lexicon is not None:
+            # lexical_biases_concat: (batch_size, target_seq_len, target_vocab_size)
+            lexical_biases_concat = mx.sym.concat(*lexical_biases, dim=1, name='lex_bias_concat')
+            # lexical_biases_concat: (batch_size * target_seq_len, target_vocab_size)
+            lexical_biases_concat = mx.sym.reshape(data=lexical_biases_concat, shape=(-1, self.target_vocab_size))
+            logits = mx.sym.broadcast_add(lhs=logits, rhs=lexical_biases_concat,
+                                          name='%s_plus_lex_bias' % C.LOGITS_NAME)
+
+        return logits
+
+    def decode_iter(self,
+                    source_encoded: mx.sym.Symbol,
+                    source_seq_len: int,
+                    source_length: mx.sym.Symbol,
+                    target: mx.sym.Symbol,
+                    target_label: mx.sym.Symbol,
+                    target_seq_len: int,
+                    source_lexicon: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+        """
+        Returns decoder logits with batch size and target sequence length collapsed into a single dimension.
+
+        :param source_encoded: Concatenated encoder states. Shape: (source_seq_len, batch_size, encoder_num_hidden).
+        :param source_seq_len: Maximum source sequence length.
+        :param source_length: Lengths of source sequences. Shape: (batch_size,).
+        :param target: Target sequence. Shape: (batch_size, target_seq_len).
+        :param target_label: Target label sequence. Shape: (batch_size, target_seq_len).
+        :param target_seq_len: Maximum target sequence length.
+        :param source_lexicon: Lexical biases for current sentence.
+               Shape: (batch_size, target_vocab_size, source_seq_len)
+        :return: Probabilities of next-word predictions for target sequence.
+                 Shape: (batch_size * target_seq_len, target_vocab_size)
+        """
+        # process encoder states
+        source_encoded_batch_major = mx.sym.swapaxes(source_encoded, dim1=0, dim2=1, name='source_encoded_batch_major')
+
+        # get recurrent attention function conditioned on source
+        attention_func = self.attention.on(source_encoded_batch_major, source_length, source_seq_len)
+        attention_state = self.attention.get_initial_state(source_length, source_seq_len)
+
+        # initialize decoder states
+        # hidden: (batch_size, rnn_num_hidden)
+        # layer_states: List[(batch_size, state_num_hidden]
+        state = self.compute_init_states(source_encoded, source_length)
+
+        # embed and slice target words
+        # target_embed: (batch_size, target_seq_len, num_target_embed)
+        target_embed = self.embedding.encode(target, None, target_seq_len)
+        # target_embed: target_seq_len * (batch_size, num_target_embed)
+        target_embed = mx.sym.split(data=target_embed, num_outputs=target_seq_len, axis=1, squeeze_axis=True)
+
+        # probs_all: target_seq_len * (batch_size, target_vocab_size)
         probs_all = []
-
-        updates = mx.sym.Variable('updates')
-
-        def inv_sigmoid_decay(_updates):
-            assert self.offset >= 1, 'Offset should be greater than or equal to 1'
-            return self.offset / (self.offset + mx.sym.exp(_updates / self.offset))
 
         self.rnn.reset()
 
@@ -444,8 +521,15 @@ class StackedRNNDecoder(Decoder):
 
             # logits: (batch_size, target_vocab_size)
             logits = mx.sym.FullyConnected(data=state.hidden, num_hidden=self.target_vocab_size,
-                                        weight=self.cls_w, bias=self.cls_b, name=C.LOGITS_NAME)
-            # probs: (batch_size, target_vocab_size)
+                                           weight=self.cls_w, bias=self.cls_b, name=C.LOGITS_NAME)
+
+            if source_lexicon is not None:
+                assert self.lexicon is not None, "source_lexicon should not be None if no lexicon available"
+                lexical_bais = self.lexicon.calculate_lex_bias(source_lexicon, attention_state.probs)
+                logits = mx.sym.broadcast_add(lhs=logit, rhs=lexical_bias,
+                                              name='%s_plus_lex_bias' % C.LOGITS_NAME)
+
+            # prob: (batch_size, target_vocab_size)
             prob = mx.sym.SoftmaxOutput(data=logits,
                                         label=splitted_target[seq_idx],
                                         ignore_label=C.PAD_ID,
