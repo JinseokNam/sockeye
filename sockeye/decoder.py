@@ -187,6 +187,52 @@ class StackedRNNDecoder(Decoder):
         self.cls_b = mx.sym.Variable("%scls_bias" % prefix)
 
         self.lexicon = lexicon
+        self._get_sampling_threshold = self._link_sampling_scheduler()
+
+    def _link_sampling_scheduler(self):
+        i = mx.sym.Variable('updates')
+
+        def _check_params(params):
+            if self.scheduled_sampling_type == 'inv-sigmoid-decay':
+                assert len(params) == 1, \
+                    ('The inverse sigmoid decaying option for scheduled sampling requires 1 parameter,'
+                    ' but given {}').format(len(params))
+
+                k = params[0]
+                assert k >= 1, 'Offset should be greater than or equal to 1'
+
+            elif self.scheduled_sampling_type == 'exponential-decay':
+                assert len(params) == 1, \
+                    ('The exponential decaying option for scheduled sampling requires 1 parameter,'
+                    ' but given {}').format(len(params))
+                k = params[0]
+                assert k < 1, 'Offset for the exponential decay should be less than 1.'
+
+            elif self.scheduled_sampling_type == 'linear-decay':
+                assert len(params) == 3, \
+                    ('The linear decaying option for scheduled sampling requires 3 parameter,'
+                    ' but given {}').format(len(params))
+
+                k, epsilon, slope = params
+
+                assert k <= 1, 'Offset for the linear decay should be less than 1.'
+                assert epsilon >= 0, 'Epsilonfor the linear decay should be greather than or equal to 0.'
+
+        _check_params(self.scheduled_sampling_decay_params)
+
+        if self.scheduled_sampling_type == 'inv-sigmoid-decay':
+            k = self.scheduled_sampling_decay_params[0]
+            sampling_scheduler = lambda: k /(k + mx.sym.exp(i / k))
+        elif self.scheduled_sampling_type == 'exponential-decay':
+            k = self.scheduled_sampling_decay_params[0]
+            sampling_scheduler = lambda: pow(k, i)
+        elif self.scheduled_sampling_type == 'linear-decay':
+            k, epsilon, slope = self.scheduled_sampling_decay_params
+            sampling_scheduler = lambda: mx.sym.clip(k - slope * i, epsilon, k)
+        else:
+            sampling_scheduler = lambda: 1
+
+        return sampling_scheduler
 
     def get_num_hidden(self) -> int:
         """
@@ -377,7 +423,8 @@ class StackedRNNDecoder(Decoder):
         self.rnn.reset()
 
         splitted_target = mx.sym.split(target_label, num_outputs=target_seq_len, axis=1, squeeze_axis=True)
-        threshold = inv_sigmoid_decay(updates)
+
+        threshold = self._get_sampling_threshold()
 
         for seq_idx in range(target_seq_len):
 
