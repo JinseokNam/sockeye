@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -168,7 +168,9 @@ def main():
                                                  data_info=data_info,
                                                  loss=args.loss,
                                                  normalize_loss=args.normalize_loss,
-                                                 smoothed_cross_entropy_alpha=args.smoothed_cross_entropy_alpha)
+                                                 smoothed_cross_entropy_alpha=args.smoothed_cross_entropy_alpha,
+                                                 scheduled_sampling_type=args.scheduled_sampling_type,
+                                                 scheduled_sampling_decay_params=args.scheduled_sampling_decay_params)
 
         # create training model
         model = sockeye.training.TrainingModel(model_config=model_config,

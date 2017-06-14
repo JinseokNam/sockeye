@@ -38,7 +38,9 @@ def get_decoder(num_embed: int,
                 dropout=0.,
                 weight_tying: bool = False,
                 lexicon: Optional[sockeye.lexicon.Lexicon] = None,
-                context_gating: bool = False) -> 'Decoder':
+                context_gating: bool = False,
+                scheduled_sampling_type: str = None,
+                scheduled_sampling_decay_params: List[float] = None) -> 'Decoder':
     """
     Returns a StackedRNNDecoder with the following properties.
 
@@ -67,7 +69,9 @@ def get_decoder(num_embed: int,
                              residual=residual,
                              forget_bias=forget_bias,
                              lexicon=lexicon,
-                             context_gating=context_gating)
+                             context_gating=context_gating,
+                             scheduled_sampling_type=scheduled_sampling_type,
+                             scheduled_sampling_decay_params=scheduled_sampling_decay_params)
 
 
 class Decoder:
@@ -139,7 +143,8 @@ class StackedRNNDecoder(Decoder):
                  forget_bias: float = 0.0,
                  lexicon: Optional[sockeye.lexicon.Lexicon] = None,
                  context_gating: bool = False,
-                 offset: float = 100.0):
+                 scheduled_sampling_type: str = None,
+                 scheduled_sampling_decay_params: List[float] = None):
         # TODO: implement variant without input feeding
         self.num_layers = num_layers
         self.prefix = prefix
@@ -157,8 +162,8 @@ class StackedRNNDecoder(Decoder):
             self.mapped_context_w = mx.sym.Variable("%smapped_context_weight" % prefix)
             self.mapped_context_b = mx.sym.Variable("%smapped_context_bias" % prefix)
 
-        # offset for scheduled sampling
-        self.offset = offset
+        self.scheduled_sampling_type = scheduled_sampling_type
+        self.scheduled_sampling_decay_params = scheduled_sampling_decay_params
 
         # Decoder stacked RNN
         self.rnn = sockeye.rnn.get_stacked_rnn(cell_type, num_hidden, num_layers, dropout, prefix, residual,

@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -186,6 +186,15 @@ def add_model_parameters(params):
     model_params.add_argument('--context-gating', action="store_true",
                               help="Enables a context gate which adaptively weighs the decoder input against the"
                                    "source context vector before each update of the decoder hidden state.")
+    model_params.add_argument('--scheduled-sampling-type',
+                              choices=['linear-decay', 'exponential-decay', 'inv-sigmoid-decay'],
+                              default=None,
+                              help="Determine whether ground truth targets or model predictions are used as inputs.")
+    model_params.add_argument('--scheduled-sampling-decay-params',
+                              nargs='+',
+                              type=float,
+                              default=None,
+                              help="Parameters of the scheduled sampling (Bengio NIPS '15).")
 
     return params
 

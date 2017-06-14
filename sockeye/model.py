@@ -5,7 +5,7 @@
 # is located at
 #
 #     http://aws.amazon.com/apache2.0/
-# 
+#
 # or in the "license" file accompanying this file. This file is distributed on
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
@@ -51,6 +51,8 @@ ModelConfig = sockeye.utils.namedtuple_with_defaults('ModelConfig',
                                                       "loss",
                                                       "normalize_loss",
                                                       "smoothed_cross_entropy_alpha",
+                                                      "scheduled_sampling_type",
+                                                      "scheduled_sampling_decay_params",
                                                   ],
                                                      default_values={
                                                       "attention_use_prev_word": False,
@@ -138,7 +140,7 @@ class SockeyeModel:
     def _build_model_components(self, max_seq_len: int, fused_encoder: bool, rnn_forget_bias: float = 0.0):
         """
         Builds and sets model components given maximum sequence length.
-        
+
         :param max_seq_len: Maximum sequence length supported by the model.
         :param fused_encoder: Use FusedRNNCells in encoder.
         :param rnn_forget_bias: forget bias initialization for RNNs.
@@ -176,7 +178,9 @@ class SockeyeModel:
                                                    self.config.dropout,
                                                    self.config.weight_tying,
                                                    self.lexicon,
-                                                   self.config.context_gating)
+                                                   self.config.context_gating,
+                                                   self.config.scheduled_sampling_type,
+                                                   self.config.scheduled_sampling_decay_params)
 
         self.rnn_cells = self.encoder.get_rnn_cells() + self.decoder.get_rnn_cells()
 
