@@ -453,13 +453,11 @@ class StackedRNNDecoder(Decoder):
                                         # normalization=normalization,
                                         name=C.SOFTMAX_NAME + '_%d' % seq_idx)
             sampled_words = mx.sym.sample_multinomial(prob)
-            # probs_all.append(mx.sym.transpose(prob))
             probs_all.append(prob)
 
-        # losses: (target_seq_len * batch_size, target_vocab_size)
-        losses = mx.sym.concat(*probs_all , dim=0, name=C.SOFTMAX_NAME)
-        losses = mx.sym.reshape(losses, shape=(target_seq_len, -1, self.target_vocab_size))
-        losses = mx.sym.swapaxes(losses, dim1=0, dim2=1)
+        # losses: (batch_size, target_seq_len, target_vocab_size)
+        losses = mx.sym.concat(*probs_all , dim=1)
+        # losses: (batch_size * target_seq_len, target_vocab_size)
         losses = mx.sym.reshape(losses, shape=(-1, self.target_vocab_size), name=C.SOFTMAX_NAME)
 
         return losses
